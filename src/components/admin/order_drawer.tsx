@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Mail, MapPin, Phone, Printer, Truck, Undo2, X } from 'lucide-react'
 import { OrderTimeline } from './order_timeline'
 import { StatusBadge } from './status_badge'
+import { EstadoPagoBadge } from './estado_pago_badge'
 import { ESTADOS_PEDIDO } from '../../hooks/usePedidos'
 import type { Order, OrderStatus } from '../../types/admin'
 
@@ -136,10 +137,13 @@ export const OrderDrawer = ({
                   <h3 className='mb-2 text-[10px] uppercase tracking-widest text-neutral-400'>
                     Cliente
                   </h3>
-                  <p className='font-semibold text-cream-100'>{pedido.customerName}</p>
+                  <p className='font-semibold text-cream-100'>{pedido.customer.name}</p>
                   <p className='mt-1 flex items-center gap-2 text-sm text-neutral-400'>
                     <Mail className='h-4 w-4 shrink-0' aria-hidden='true' />
-                    <span className='truncate'>{pedido.customerEmail}</span>
+                    {/* `email` es `string | null`: el `Customer.email` de la base
+                        es opcional, y un `?? ''` con un guion da menos informacion
+                        que nada. */}
+                    <span className='truncate'>{pedido.customer.email ?? '—'}</span>
                   </p>
                 </section>
 
@@ -211,15 +215,42 @@ export const OrderDrawer = ({
                   </dl>
                 </section>
 
-                {/* --- Estado --- */}
+                {/* --- Pago y envio: DOS hechos distintos (D-7) ---
+                    Los dos badges van juntos y cada uno con su rotulo, porque un
+                    pedido puede estar "aprobado" de pago y "pendiente" de envio:
+                    la plata entro y el paquete todavia no se armo. Puestos sin
+                    rotulo se leen como una sola cosa, que es el bug que la 009
+                    vino a separar. */}
                 <section>
                   <h3 className='mb-2 text-[10px] uppercase tracking-widest text-neutral-400'>
-                    Estado
+                    Pago
+                  </h3>
+                  <div className='flex flex-wrap items-center gap-3'>
+                    <EstadoPagoBadge estado={pedido.pagoEstado} />
+
+                    {pedido.pagoEstado === 'expirado' && (
+                      <p className='text-xs text-neutral-500'>
+                        Vencio esperando el pago. Nadie rechazo nada.
+                      </p>
+                    )}
+
+                    {pedido.pagoEstado === 'aprobado' && pedido.status !== 'entregado' && (
+                      <p className='text-xs text-neutral-500'>
+                        La plata entro. Falta coordinar el envio.
+                      </p>
+                    )}
+                  </div>
+                </section>
+
+                {/* --- Envio --- */}
+                <section>
+                  <h3 className='mb-2 text-[10px] uppercase tracking-widest text-neutral-400'>
+                    Envio
                   </h3>
                   <div className='flex flex-wrap items-center gap-3'>
                     <StatusBadge estado={pedido.status} />
                     <label htmlFor='order-status' className='sr-only'>
-                      Cambiar estado del pedido
+                      Cambiar estado del envio
                     </label>
                     <select
                       id='order-status'

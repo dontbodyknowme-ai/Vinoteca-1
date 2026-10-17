@@ -95,8 +95,11 @@ export const csvPedidos = (pedidos: readonly Order[]): string => {
 
   const filas = pedidos.map((pedido) => [
     pedido.id,
-    pedido.customerName,
-    pedido.customerEmail,
+    // `customer.name`, no `pedido.customerName`: el campo plano no existe en la
+    // respuesta de la API y el CSV salia con la columna vacia, que es peor que
+    // no exportar — un archivo que parece completo y no lo esta.
+    pedido.customer.name,
+    pedido.customer.email ?? '',
     // `slice(0, 10)`: la fecha en `YYYY-MM-DD`. Es la fecha local del pedido,
     // por el mismo criterio que el filtro de fechas del panel.
     pedido.createdAt.slice(0, 10),

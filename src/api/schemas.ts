@@ -200,9 +200,22 @@ export interface OrderItem {
   price: number
 }
 
+/**
+ * Una entrada del historial (spec 009).
+ *
+ * `status` y `pagoEstado` son **`string | null`**, no `string`. El backend los
+ * devuelve asi desde que un evento de pago no cambia el envio: la entrada de
+ * pago viene con `status: null` y la de envio con `pagoEstado: null`.
+ *
+ * Declararlos `string` era una mentira que el compilador no podia ver —nadie
+ * asigna estos tipos a una respuesta real— y que se weep al primer evento de
+ * pago: el panel receive un `null` donde el tipo decia `string`.
+ */
 export interface OrderTimelineEntry {
   id: string
-  status: string
+  status: string | null
+  pagoEstado: string | null
+  origen: string
   note: string | null
   author: string
   createdAt: string
@@ -215,6 +228,13 @@ export interface Order {
   items: OrderItem[]
   total: number
   status: 'pendiente' | 'preparando' | 'enviado' | 'entregado' | 'cancelado' | 'devuelto'
+  /**
+   * Estado del pago (spec 009, D-7). Viene del `Order.pagoEstado` de Prisma por
+   * el `...order` del handler, asi que esta en la lista y en el detalle.
+   */
+  pagoEstado: 'no_iniciado' | 'pendiente' | 'aprobado' | 'rechazado' | 'expirado'
+  /** Id del pago en Mercado Pago. `null` mientras no se armo la Preference. */
+  pagoId: string | null
   shippingAddress: Record<string, unknown>
   timeline: OrderTimelineEntry[]
   createdAt: string

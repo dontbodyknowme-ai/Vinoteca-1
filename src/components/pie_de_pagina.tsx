@@ -8,7 +8,7 @@ export const Footer = () => {
         <div className='grid grid-cols-1 md:grid-cols-3 gap-12 mb-12'>
           <div>
             <p className='text-gold-500 font-serif text-2xl font-bold tracking-wider mb-4'>
-              2920
+              {TIENDA.nombre}
             </p>
             <p className='text-neutral-400 text-sm leading-relaxed mb-6'>
               Seleccion exclusiva de vinos de alta gama para los paladares mas exigentes.
@@ -82,7 +82,7 @@ export const Footer = () => {
           className='pt-8 border-t border-neutral-800/50 flex flex-col md:flex-row justify-between items-center gap-4'
         >
           <p className='text-neutral-500 text-sm'>
-            © 2024 2920. Todos los derechos reservados.
+            © 2024 {TIENDA.nombre}. Todos los derechos reservados.
           </p>
           <p className='text-gold-400 text-sm font-semibold'>
             Prohibida la venta de alcohol a menores de 18 años. Beba con moderación.

@@ -1,9 +1,9 @@
-﻿import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { useApi } from './useApi'
 import { csvPedidos, descargarComo } from '../utils/csv_export'
 import { exigirConexion } from '../utils/offline'
-import type { Order, OrderStatus, Paginated } from '../types/admin'
+import type { EstadoPago, Order, OrderStatus, Paginated } from '../types/admin'
 
 /**
  * Estado y operaciones de la tabla de pedidos.
@@ -23,24 +23,70 @@ export const ESTADOS_PEDIDO: ReadonlyArray<{ valor: OrderStatus; etiqueta: strin
   { valor: 'devuelto', etiqueta: 'Devuelto' }
 ]
 
+/**
+ * Los estados de **pago** del filtro (spec 009, D-10).
+ *
+ * Va en su propio multi-select y no mezclado con el de envio, por lo de D-7:
+ * `pendiente` significa "estamos armando el paquete" en una lista y "abrio
+ * Mercado Pago y no termino" en la otra. En un desplegable unico, marcar
+ * "Pendiente" seria ambiguo y habria que adivinar cual de los dos se filtraba.
+ *
+ * El orden es el del **proceso**: no se pagó, se esta pagando, se pagó, no se
+ * pudo, se fue.
+ */
+export const ESTADOS_PAGO: ReadonlyArray<{ valor: EstadoPago; etiqueta: string }> = [
+  { valor: 'no_iniciado', etiqueta: 'Sin iniciar' },
+  { valor: 'pendiente', etiqueta: 'Pendiente' },
+  { valor: 'aprobado', etiqueta: 'Aprobado' },
+  { valor: 'rechazado', etiqueta: 'Rechazado' },
+  { valor: 'expirado', etiqueta: 'Expirado' }
+]
+
 export interface FiltrosPedidos {
   search: string
   /** Vacio = todos los estados. Varios = OR entre ellos. */
   estados: OrderStatus[]
+  /**
+   * Estados de **pago**. Separate de `estados` a proposito, y con las dos listas
+   * combinandose con AND entre ellas y OR adentro: "los **expirados** que
+   * ademas esten **pendientes** de envio" es la pregunta que se hace todos los
+   * dias — son los que hay que liberar.
+   */
+  pagos: EstadoPago[]
   dateFrom: string
   dateTo: string
   sortColumn: string
   sortDirection: 'asc' | 'desc'
 }
 
-const FILTROS_VACIOS: FiltrosPedidos = {
+/**
+ * Los filtros, todos vacios.
+ *
+ * **Devuelve un objeto nuevo cada vez** y por eso es una funcion y no una
+ * constante: `aplicarFiltros` hace `{ ...previo, ...cambios }`, asi que un objeto
+ * compartido se mutaria entre llamadas y un filtro puesto apareceria en otro
+ * pedido.
+ *
+ * ## Por que el tipo es `FiltrosPedidos` y no `Partial<FiltrosPedidos>`
+ *
+ * Por el bug que casi fue: `limpiarTodo` armaba el objeto a mano y se le
+ * **olvido** el `pagos`, que seagrego despues. Con `aplicarFiltros` fusionando, no
+ *limpiar el filtro de pago — el boton de "limpiar todo" no limpia todo, y el
+ * usuario ve que lo aprieto y la tabla no cambia.
+ *
+ * Con el tipo completo, omitir un campo es un **error de compilacion**, no una
+ * duda. Que se note al escribir y no cuando el operador este buscando pedidos
+ * expirados.
+ */
+export const filtrosVacios = (): FiltrosPedidos => ({
   search: '',
   estados: [],
+  pagos: [],
   dateFrom: '',
   dateTo: '',
   sortColumn: '',
   sortDirection: 'desc'
-}
+})
 
 /**
  * Las fechas viajan en `YYYY-MM-DD`.
@@ -50,7 +96,15 @@ const FILTROS_VACIOS: FiltrosPedidos = {
  * zona horaria: en Argentina (UTC-3) un pedido de las 20:00 pertenece al dia
  * anterior en UTC, y el admin veria pedidos fuera del rango que eligio.
  */
-const construirUrl = (
+/**
+ * Arma la query de la lista.
+ *
+ * **Exportada** y no metida adentro del hook: es la unica forma de afirmar como
+ * viaja el filtro sin montar el panel. Con todo privado, comprobar que el
+ * multi-select manda dos estados seria montar la pagina entera, escribir en el
+ * buscador y leer la red — veinte lineas de andamiaje para afirmar un `append`.
+ */
+export const construirUrl = (
   filtros: FiltrosPedidos,
   page: number,
   limit: number
@@ -60,7 +114,24 @@ const construirUrl = (
   params.set('limit', String(limit))
 
   if (filtros.search.trim() !== '') params.set('search', filtros.search.trim())
-  if (filtros.estados.length > 0) params.set('status', filtros.estados.join(','))
+
+  /**
+   * El estado va **repetido**, no joined con comas.
+   *
+   * `?status=pendiente,enviado` no es ningun miembro del enum del backend, asi
+   * que el multi-select del panel —que marca varias casillas y siempre marcar
+   * varias— daba **400** en cuanto marcabas la segunda. Y no se veia en el
+   * panel: el filtro se cerraba solo y la tabla seguia mostrando lo de antes,
+   * como si no hubiera pasado nada.
+   *
+   * Con `append`, uno solo y dos dan lo mismo:
+   *
+   *     ?status=pendiente
+   *     ?status=pendiente&status=enviado
+   */
+  for (const estado of filtros.estados) params.append('status', estado)
+  for (const pago of filtros.pagos) params.append('pagoEstado', pago)
+
   if (filtros.dateFrom !== '') params.set('dateFrom', filtros.dateFrom)
   if (filtros.dateTo !== '') params.set('dateTo', filtros.dateTo)
   if (filtros.sortColumn !== '') {
@@ -92,7 +163,10 @@ export interface EstadoPedidos {
 export const usePedidos = (): EstadoPedidos => {
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(10)
-  const [filtros, setFiltros] = useState<FiltrosPedidos>(FILTROS_VACIOS)
+  // `filtrosVacios()` y no la constante: el estado inicial **deberia** ser el
+  // mismo objeto en todos los mounts, y un objeto compartido que alguien
+  // mutee se lleva los filtros de otro mount. La funcion devuelve uno nuevo.
+  const [filtros, setFiltros] = useState<FiltrosPedidos>(filtrosVacios)
 
   const url = useMemo(() => construirUrl(filtros, page, limit), [filtros, page, limit])
   const { data, isLoading, error, refetch } = useApi<Paginated<Order>>(url, { respaldo: 'pedidos' })
@@ -136,7 +210,11 @@ export const usePedidos = (): EstadoPedidos => {
     // exportar.
     const params = new URLSearchParams({ page: '1', limit: '100' })
     if (filtros.search.trim() !== '') params.set('search', filtros.search.trim())
-    if (filtros.estados.length > 0) params.set('status', filtros.estados.join(','))
+    // Repetido, igual que en `construirUrl`. Exportar con el filtro puesto es
+    // lo que hace que el CSV sirva: si el estado no llegara, se exportarian los
+    // 100 primeros sin filtrar, que es peor que no exportar.
+    for (const estado of filtros.estados) params.append('status', estado)
+    for (const pago of filtros.pagos) params.append('pagoEstado', pago)
     if (filtros.dateFrom !== '') params.set('dateFrom', filtros.dateFrom)
     if (filtros.dateTo !== '') params.set('dateTo', filtros.dateTo)
 

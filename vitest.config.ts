@@ -7,8 +7,21 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     // jsdom habilita los tests de componentes presentes y futuros.
-    // Los tests actuales son de datos, pero deja el entorno preparado.
     environment: 'jsdom',
+
+    /**
+     * La URL importa mas de lo que parece: **sin origen, `localStorage` no
+     * existe**. jsdom lo expone `undefined`, no un objeto vacio, asi que
+     * `localStorage.getItem(...)` es un `TypeError` y no un `null`.
+     *
+     * La app usa `localStorage` para el catalogo y el carrito, asi que un
+     * entorno sin URL no puede probar los tests que tocan el almacenamiento —
+     * que son justamente los que verifican que el carrito sobreviva a una
+     * recarga. Con `about:blank` el origen es opaco y no hay almacenamiento.
+     */
+    environmentOptions: {
+      jsdom: { url: 'http://localhost:5173' }
+    },
 
     // Solo se recolectan tests dentro de la carpeta `test/` del proyecto.
     include: ['test/**/*.test.ts'],

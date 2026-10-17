@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Wine, CartItem } from './types/vino'
 import { INITIAL_WINES } from './datos/vino'
+import { Checkout } from './pages/checkout'
 import { Navbar } from './components/barra_de_navegacion'
 import { Hero } from './components/hero'
 
@@ -61,6 +63,7 @@ function saveCart(cart: CartItem[]) {
 }
 
 export default function App() {
+  const ubicacion = useLocation()
   const [wines, setWines] = useState<Wine[]>(() => loadWines())
   const [cart, setCart] = useState<CartItem[]>(() => loadCart())
   const [searchQuery, setSearchQuery] = useState('')
@@ -71,7 +74,10 @@ export default function App() {
   const [minPrice, setMinPrice] = useState<number | ''>('')
   const [maxPrice, setMaxPrice] = useState<number | ''>('')
   const [selectedVarietals, setSelectedVarietals] = useState<string[]>([])
-  const [pedidoConfirmado, setPedidoConfirmado] = useState(false)
+  // `pedidoConfirmado` se fue con la 009: era un cartel que salia sin que
+  // hubiera pasado nada — el carrito se vaciaba y se decia "gracias" sin
+  // pedido, sin pago y sin pasarela. Ahora la confirmacion la dice el backend,
+  // despues de que Mercado Pago confirme.
   // El estado `isAdmin` y su toggle se agregan en T9, junto con el boton del
   // navbar que los consume. Declararlos en T1 dejaba el setter sin uso y el
   // `noUnusedLocals` del proyecto lo rechaza: el flag queda persistido por las
@@ -117,9 +123,10 @@ export default function App() {
   // encontrar el mensaje.
   const finalizarCompra = useCallback(() => {
     if (cart.length === 0) return
-    setCart([])
-    setCartOpen(false)
-    setPedidoConfirmado(true)
+    // Antes vaciaba el carrito y mostraba un cartel de "Pedido confirmado" sin
+    // que hubiera pasado nada. **No se vacia aca**: si el comprador cancela en
+    // Mercado Pago, su carrito tiene que seguir ahi (D-D de la 009).
+    window.location.assign('/checkout')
   }, [cart.length])
 
   const agregarWine = useCallback((wine: Wine) => {
@@ -138,6 +145,28 @@ export default function App() {
   }, [])
 
   const cartCount = cart.reduce((acc, item) => acc + item.quantity, 0)
+
+  // El checkout vive en `App` y no en una pagina aparte porque **el carrito esta
+  // aca**: en `localStorage` y en este estado, sin contexto. Si `Checkout` fuera
+  // su propia ruta con su propio componente, el formulario no tendria que
+  // mandar.
+  //
+  // Y decide por la URL, no por una prop: la URL es la unica fuente, y una prop
+  // que puede no coincidir con el `pathname` es una prop que un dia coincide
+  // menos.
+  if (ubicacion.pathname === '/checkout') {
+    return (
+      <Checkout
+        items={cart}
+        alConfirmar={() => {
+          // El carrito se vacia **solo** con el pago aprobado. Si el comprador
+          // cancela en Mercado Pago, su carrito sigue ahi (D-D de la 009).
+          setCart([])
+          setCartOpen(false)
+        }}
+      />
+    )
+  }
 
   return (
     <>
@@ -195,14 +224,6 @@ export default function App() {
         wine={selectedWine}
         onClose={() => setSelectedWine(null)}
       />
-      {pedidoConfirmado && (
-        <p
-          role='status'
-          className='pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-gold-500/40 bg-charcoal-900/95 px-6 py-4 text-center text-sm font-semibold tracking-wider text-gold-400 shadow-2xl'
-        >
-          Pedido confirmado. Gracias por tu compra.
-        </p>
-      )}
     </>
   )
 }

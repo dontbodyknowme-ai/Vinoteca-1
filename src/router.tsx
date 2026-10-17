@@ -13,9 +13,23 @@ import { PedidosAdmin } from './pages/admin/pedidos'
 //
 // `catchAll` esta para que una URL desconocida en el admin no quede en blanco.
 // Va al inicio publico, no a un 404 propio: la 004-a no define un 404.
+//
+// El checkout (`/checkout`, spec 009) es **publico y va antes del admin**: el
+// comprador no tiene sesion.
+//
+// Las dos rutas publicas renderizan el **mismo** `App`. El carrito vive en
+// `localStorage` y en el estado de `App`, no en un contexto, asi que el checkout
+// necesita a `App` para poder mandar. Que `App` decida con `useLocation()` en
+// vez de recibir una prop `rutaInterna` es a proposito: **la URL es la unica
+// fuente**, y una prop que puede no coincidir con ella es una prop que un dia
+// va a coincidir menos.
 export const router = createBrowserRouter([
   {
     path: '/',
+    element: <App />
+  },
+  {
+    path: '/checkout',
     element: <App />
   },
   {

@@ -1,9 +1,10 @@
-import { Check, Circle, X } from 'lucide-react'
+import { Check, Circle, CreditCard, X } from 'lucide-react'
 import type { OrderStatus, OrderTimelineEntry } from '../../types/admin'
 import { StatusBadge } from './status_badge'
+import { EstadoPagoBadge } from './estado_pago_badge'
 
 /**
- * Timeline de estados de un pedido (RF-26).
+ * Timeline de un pedido (RF-26, y los eventos de pago de la 009).
  *
  * Se dibuja sobre `OrderTimelineEntry[]`, que es lo que devuelve
  * `GET /api/orders/:id`. No recalcula los estados: si el registro de un pedido
@@ -11,6 +12,17 @@ import { StatusBadge } from './status_badge'
  * actual seria mentir cuando hubo un salto: CE-06 de la spec 004-b permite
  * pasar de `pendiente` a `entregado` sin pasar por `enviado`, y ese salto tiene
  * que quedar visible.
+ *
+ * ## Una entrada es de envio O de pago, nunca las dos
+ *
+ * Por eso `status` y `pagoEstado` son los dos opcionales y el componente decide
+ * con cual de los dos vino. Una entrada con los dos seria una mentira: un
+ * estado de envio que en realidad esconde un pago.
+ *
+ * Y una entrada **sin ninguno de los dos** no se renderiza: no hay nada que
+ * mostrar y fingir un estado seria inventar historial. El backend no las escribe
+ * —la de pago siempre trae `pagoEstado`, la de envio siempre trae `status`—, asi
+ * que el filtro es una red, no una regla de negocio.
  */
 
 const formatoFecha = (iso: string): string =>
@@ -25,12 +37,22 @@ const formatoFecha = (iso: string): string =>
 /** El ultimo evento es el estado actual. */
 const esUltimo = (indice: number, total: number): boolean => indice === total - 1
 
+/** Pagos que no son "llego la plata": no llevan el check verde. */
+const esPagoFallido = (entrada: OrderTimelineEntry): boolean =>
+  entrada.pagoEstado === 'rechazado' || entrada.pagoEstado === 'expirado'
+
+/** Envios que no son "llego el paquete": llevan la X. */
+const esEnvioFallido = (entrada: OrderTimelineEntry): boolean =>
+  entrada.status === 'cancelado' || entrada.status === 'devuelto'
+
 interface OrderTimelineProps {
   entradas: readonly OrderTimelineEntry[]
 }
 
 export const OrderTimeline = ({ entradas }: OrderTimelineProps) => {
-  if (entradas.length === 0) {
+  const utiles = entradas.filter((e) => e.status !== undefined || e.pagoEstado !== undefined)
+
+  if (utiles.length === 0) {
     return <p className='text-sm text-neutral-500'>Este pedido no tiene historial.</p>
   }
 
@@ -43,12 +65,22 @@ export const OrderTimeline = ({ entradas }: OrderTimelineProps) => {
         className='absolute bottom-2 left-[9px] top-2 w-px bg-neutral-800'
       />
 
-      {entradas.map((entrada, indice) => {
-        const actual = esUltimo(indice, entradas.length)
-        const fallido = entrada.status === 'cancelado' || entrada.status === 'devuelto'
+      {utiles.map((entrada, indice) => {
+        const actual = esUltimo(indice, utiles.length)
+        const fallido = esPagoFallido(entrada) || esEnvioFallido(entrada)
+        /**
+         * Se guarda en una variable y no como `const dePago = entrada.pagoEstado
+         * !== undefined` porque el narrowing por alias solo funciona cuando la
+         * condicion es una comprobacion directa; el error de tipo lo dice mejor
+         * que el comentario.
+         */
+        const pago = entrada.pagoEstado
 
         return (
-          <li key={`${entrada.status}-${entrada.timestamp}`} className='relative'>
+          <li
+            key={`${entrada.pagoEstado ?? entrada.status}-${entrada.createdAt}`}
+            className='relative'
+          >
             <span
               aria-hidden='true'
               className={[
@@ -62,6 +94,8 @@ export const OrderTimeline = ({ entradas }: OrderTimelineProps) => {
             >
               {fallido ? (
                 <X className='h-3 w-3 text-wine-400' />
+              ) : pago !== undefined ? (
+                <CreditCard className='h-3 w-3 text-emerald-300' />
               ) : actual ? (
                 <Check className='h-3 w-3 text-gold-400' />
               ) : (
@@ -69,8 +103,20 @@ export const OrderTimeline = ({ entradas }: OrderTimelineProps) => {
               )}
             </span>
 
+            {/* El rotulo "Pago"/"Envio" va **siempre**, no solo cuando los dos
+                estados coinciden. Dos "Pendiente" pegados no dicen nada; uno
+                rotulado y el otro no, tampoco. */}
             <div className='flex flex-wrap items-center gap-2'>
-              <StatusBadge estado={entrada.status} size='sm' />
+              <span className='text-[10px] uppercase tracking-widest text-neutral-500'>
+                {pago !== undefined ? 'Pago' : 'Envio'}
+              </span>
+
+              {pago !== undefined ? (
+                <EstadoPagoBadge estado={pago} size='sm' />
+              ) : (
+                <StatusBadge estado={entrada.status as OrderStatus} size='sm' />
+              )}
+
               {actual && (
                 <span className='text-[10px] uppercase tracking-widest text-neutral-500'>
                   Estado actual
@@ -78,9 +124,18 @@ export const OrderTimeline = ({ entradas }: OrderTimelineProps) => {
               )}
             </div>
 
-            <p className='mt-1 text-xs text-neutral-400'>{formatoFecha(entrada.timestamp)}</p>
+            <p className='mt-1 text-xs text-neutral-400'>{formatoFecha(entrada.createdAt)}</p>
             {entrada.note !== undefined && (
-              <p className='mt-1 text-sm text-neutral-300'>{entrada.note}</p>
+              <p className='mt-1 text-sm text-cream-300'>{entrada.note}</p>
+            )}
+
+            {/* El autor se muestra solo cuando **no** es "Admin": "Admin" al
+                lado de cada cambio de envio es ruido, y lo que interesa es
+                poder distinguir de un vistazo lo que escribio una webhook. */}
+            {entrada.author !== 'Admin' && (
+              <p className='mt-0.5 text-[10px] uppercase tracking-widest text-neutral-600'>
+                {entrada.author}
+              </p>
             )}
           </li>
         )

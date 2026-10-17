@@ -196,7 +196,52 @@ export const buildApp = async (): Promise<FastifyInstance> => {
 
   await registerRoutes(fastify)
 
+  /**
+   * El cron de expiracion (spec 009, T5).
+   *
+   * Corre **dentro del proceso**, no como un cron del sistema. Es la unica forma
+   * que hay en Render free —que no tiene cronjobs— y es coherente con que las
+   * migraciones tambien corran en el arranque: si el contenedor esta arriba, el
+   * servidor esta; si no esta, no hay nadie a quien expirarle un pedido.
+   *
+   * El precio es que corre en cada instancia. Con dos en un deploy solapado, las
+   * dos expiran — y por eso `expirarPedidosSinPagar` es un `updateMany`
+   * condicional y no un find-then-update.
+   */
+  const { arrancarCronPedidos } = await import('./modules/orders/cron.js')
+  const detenerCronPedidos = arrancarCronPedidos(fastify.prisma)
+
+  /**
+   * El proveedor de pagos se registra **aca**, y no dentro de `ordersRoutes`.
+   *
+   * La razon es que el modulo de pedidos no sabe nada de Mercado Pago: recibe un
+   * `ProveedorPagos` y trabaja contra esa interfaz. Configurarlo aca deja la
+   * decision de "que usar" en el arranque, donde se pueden ver las variables, y
+   * deja los tests libres de registrar nada (usan el doble).
+   */
+  const { configurarProveedor, proveedorMercadoPago } = await import('./modules/pagos/proveedor.js')
+
+  const token = env.MERCADO_PAGO_ACCESS_TOKEN
+  if (token !== undefined && token.trim() !== '') {
+    configurarProveedor(proveedorMercadoPago(token.trim()))
+    logger.info('Mercado Pago configurado')
+  } else {
+    /**
+     * Sin token **no** se registra nada, y el checkout va a fallar con
+     * "Mercado Pago no esta configurado". Deliberado: un proveedor mudo que
+     * devuelve un id falso haria que la app pareciera funcionar y que cada pago
+     * quedara colgado esperando una webhook que nunca llega.
+     */
+    logger.warn(
+      'MERCADO_PAGO_ACCESS_TOKEN no esta definido: el checkout va a fallar hasta que se ponga'
+    )
+  }
+
   fastify.addHook('onClose', async () => {
+    // El cron se apaga **antes** de desconectar Prisma: si no, el intervalo
+    // podria disparar una consulta contra una conexion ya cerrada y dejar un
+    // rejection flotando.
+    detenerCronPedidos()
     await fastify.prisma.$disconnect()
   })
 

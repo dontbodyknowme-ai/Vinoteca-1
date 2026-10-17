@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuth } from '../hooks/useAuth'
+import { TIENDA } from '../utils/tienda'
 
 const NAV_LINKS = [
   { href: '#hero', label: 'Inicio' },
@@ -67,7 +68,7 @@ export const Navbar = ({
           <a href='#' className='flex items-center gap-2'>
             <img
               src='/logo-2920.svg'
-              alt='2920'
+              alt={TIENDA.nombre}
               className='h-10 w-auto'
             />
           </a>
@@ -204,9 +205,27 @@ export const Navbar = ({
               aria-label='Menú de navegación'
             >
               <div className='p-6 border-b border-neutral-800 flex items-center justify-between'>
-                <h2 className='text-xl font-serif font-bold text-cream-100'>
-                  Navegación
-                </h2>
+                {/* El drawer mobile abria con el titulo "Navegacion" y **sin
+                    nombre de tienda**, mientras la barra de escritorio muestra el
+                    logo. O sea que en el movil no se decia de que tienda era el
+                    menu que se estaba abriendo.
+
+                    El nombre sale de `TIENDA.nombre` y no de un texto aca: es el
+                    mismo que muestra Configuracion, y asi un rebranding no
+                    puede olvidarse este archivo —que es exactamente lo que paso
+                    con el nombre viejo. El logo va con `alt` y no como texto
+                    porque si la imagen no carga, el `alt` es lo que queda. */}
+                <div className='flex items-center gap-2.5'>
+                  <img
+                    src='/logo-2920.svg'
+                    alt={TIENDA.nombre}
+                    className='h-8 w-auto'
+                  />
+                  <span className='font-serif text-lg font-bold tracking-tight text-cream-100'>
+                    {TIENDA.nombre}
+                  </span>
+                </div>
+
                 <button
                   onClick={() => setMobileMenuOpen(false)}
                   className='text-neutral-400 hover:text-cream-100 p-2 rounded-lg hover:bg-neutral-800 transition-colors'
@@ -216,7 +235,10 @@ export const Navbar = ({
                 </button>
               </div>
 
-              <nav className='flex-1 p-6'>
+              <nav className='flex-1 p-6' aria-label='Navegación'>
+                <h2 className='mb-4 text-[10px] uppercase tracking-widest text-neutral-500'>
+                  Navegación
+                </h2>
                 <ul className='flex flex-col gap-4'>
                   {NAV_LINKS.map((link) => (
                     <li key={link.href}>

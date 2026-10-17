@@ -4,7 +4,18 @@
 
 ### D-A — El checkout vive en el frontend, los pedidos en el backend
 
-El comprador completa el formulario de datos en el frontend. Al confirmar, el frontend llama a `POST /api/pedidos` con los datos + items. El backend crea el pedido en `pendiente` y devuelve una `preference_id` de Mercado Pago. El frontend redirige al comprador a `https://www.mercadopago.com.ar/checkout/v1/redirect?preference-id=<id>`.
+El comprador completa el formulario de datos en el frontend. Al confirmar, el frontend llama a `POST /api/orders` con los datos + items. El backend crea el pedido y devuelve una `preference_id` de Mercado Pago. El frontend redirige al comprador a `https://www.mercadopago.com.ar/checkout/v1/redirect?preference-id=<id>`.
+
+> **Por qué `/api/orders` y no `/api/pedidos`** (corrección a la primera versión de
+> este plan): el módulo `modules/orders/` ya existe, con `GET /api/orders` y
+> `PATCH /api/orders/:id`. Un `modules/pedidos/` aparte sería **el mismo
+> pedido en dos módulos**, con el panel leyendo uno y el checkout escribiendo el
+> otro. Es el motivo por el que `tsconfig.json` declara las variables en un
+> bloque y no repetidas por paso.
+
+`POST /api/orders` es **público**: a diferencia del `GET` y el `PATCH`, no lleva
+`requireRole`, porque lo llama alguien sin sesión. Los tres conviven en el mismo
+archivo y cada uno declara su propio `preHandler`.
 
 **Alternativa descartada:** Que el frontend cree la Preference directamente con el Access Token de Mercado Pago. Eso expone la credencial en el bundle público — cualquier persona puede verla desde las DevTools y crear pedidos falsos. El Access Token vive solo en el backend.
 
@@ -12,19 +23,59 @@ El comprador completa el formulario de datos en el frontend. Al confirmar, el fr
 
 El frontend redirige al comprador de vuelta a la tienda con un query param (`?pago=aprobado`). Eso es solo cosmético: la confirmación real viene del webhook de Mercado Pago al backend.
 
-**Alternativa descartada:** Que el frontend consulte `GET /api/pedidos/:id` hasta ver si cambió el estado. Innecesario: el webhook ya hace el trabajo, y si el comprador cierra la pestaña antes de volver, el pedido se actualiza igual.
+**Alternativa descartada:** Que el frontend consulte el estado del pedido hasta ver si cambió. Innecesario: el webhook ya hace el trabajo, y si el comprador cierra la pestaña antes de volver, el pedido se actualiza igual.
 
-### D-C — Los pedidos pendientes expiran con un cron job
+### D-C — Los pedidos sin pagar expiran con un cron job
 
-Un setInterval en el backend revisa cada minuto los pedidos en `pendiente` con más de 10 minutos de antigüedad y los marca como `expirado`.
+Un `setInterval` en el backend revisa cada minuto los pedidos con
+`pago in ('no_iniciado', 'pendiente')` y más de 10 minutos de antigüedad, y les
+pone `pago = 'expirado'`.
+
+> **Corrección:** expirar **no** pone `status = 'expirado'`. `expirado` no existe
+> en `OrderStatus` (D-7), y aunque existiera significaría "el envío se venció",
+> que no es lo que pasó. El envío de un pedido sin pagar no se venció: no se
+> mandó nunca.
 
 **Alternativa descartada:** Expirar en el frontend al volver de Mercado Pago. No sirve: si el comprador no vuelve, nadie expira el pedido.
 
 ### D-D — El carrito se vacía solo cuando el pago es aprobado
 
-El webhook recibe `payment.approved`, el backend marca el pedido como `pagado`, y el frontend vacía el carrito al volver con `?pago=aprobado`.
+El webhook recibe `payment.approved`, el backend pone `pago = 'aprobado'` en el pedido y suma el total en el `Customer`, y el frontend vacía el carrito al volver con `?pago=aprobado`.
 
 **Alternativa descartada:** Vaciar el carrito al crear el pedido. Si el comprador no paga, perdió el carrito.
+
+### D-E — El total lo recalcula el backend a partir de `Wine.price`
+
+> **Corrección a la primera versión de este plan**, que hacía
+> `sum(items.map(i => i.precioUnitario * i.cantidad))`. El carrito vive en el
+> `localStorage`: cualquiera puede editarlo desde las DevTools y pagar un pedido
+> de $150.000 con $2.
+
+Del pedido llega **qué** vinos y **cuántos**. El precio lo pone el backend, leyéndolo
+de la base. El resultado es **el mismo número** que se guarda en `Order.total` y
+el que se manda a Mercado Pago — no se calculan dos veces, porque si difirieran
+la webhook podría aprobar un monto que el panel nunca muestra.
+
+### D-F — El detalle público del pedido no devuelve datos del comprador
+
+> **Corrección a la primera versión**, que tenía un `GET /api/pedidos/:id`
+> público devolviendo nombre, teléfono y dirección. Cualquiera que consiga el id
+> —un `cuid`, que se puede adivinar o filtrar— leía los datos personales de un
+> cliente que **no tiene cuenta en el sistema**. Un dato que nunca se pidió más
+> de lo necesario sigue siendo un dato expuesto.
+
+El `GET /api/orders/:id` que ya existe **sigue con `requireRole`**. Para la
+confirmación del comprador hay dos caminos:
+
+- **Preferido:** el frontend guarda el `orderId` en `sessionStorage` y la
+  confirmación muestra solo el número y el total, sin pedir nada al backend.
+- **Si hace falta releer del servidor:** un endpoint público que devuelve
+  **solo** `id` y `total`, y que responde `404` a cualquier otro `orderId`
+  cuando la sesión no corresponde.
+
+**Alternativa descartada:** devolver los datos del comprador desde el endpoint
+público, "porque el comprador ya los puso". Precisamente por eso hay que
+devolverlos: uno que ya los escribió igual tiene que poder recargar la página.
 
 ---
 
@@ -32,22 +83,28 @@ El webhook recibe `payment.approved`, el backend marca el pedido como `pagado`, 
 
 ### Backend (`backend/src/`)
 
-| Archivo | Responsabilidad |
-|---|---|
-| `modules/pedidos/routes.ts` | Rutas CRUD de pedidos + webhook de Mercado Pago |
-| `modules/pedidos/servicio.ts` | Lógica de crear pedido, actualizar estado, expirar |
-| `modules/pedidos/esquemas.ts` | Schemas Zod para validar entrada |
-| `modules/pagos/proveedor.ts` | Crear Preference en Mercado Pago con el Access Token |
-| `modules/pedidos/cron.ts` | Job que expira pedidos pendientes cada minuto |
-| `prisma/schema.prisma` | Modelos `Pedido`, `PedidoItem`, `Comprador` |
+> **Corrección:** la primera versión creaba `modules/pedidos/` con cuatro
+> archivos, y `Pedido`/`PedidoItem`/`Comprador` en el schema. Los tres ya existen
+> como `Order`/`OrderItem`/`Customer`, y `modules/orders/` ya tiene las rutas que
+> el panel usa. Un módulo paralelo dejaría **dos fuentes de pedidos**.
+
+| Archivo | Estado | Responsabilidad |
+|---|---|---|
+| `modules/orders/routes.ts` | **se extiende** | + `POST /api/orders` (público) y `POST /api/orders/webhook` |
+| `modules/orders/service.ts` | **se extiende** | Crear pedido con total recalculado, aplicar pago, expirar |
+| `shared/schemas.ts` | **se extiende** | `orderCreateSchema` (datos del comprador + items) |
+| `modules/pagos/proveedor.ts` | **nuevo** | Crear Preference en Mercado Pago con el Access Token |
+| `modules/orders/cron.ts` | **nuevo** | Expira pedidos sin pagar cada minuto |
+| `prisma/schema.prisma` | **se extiende** | **Solo** `pagoEstado` + `pagoId`. Nada más |
 
 ### Frontend (`src/`)
 
 | Archivo | Responsabilidad |
 |---|---|
 | `src/components/checkout/formulario.tsx` | Formulario de datos del comprador |
-| `src/components/checkout/boton_pagar.tsx | Botón que crea el pedido y redirige a Mercado Pago |
+| `src/components/checkout/boton_pagar.tsx` | Botón que crea el pedido y redirige a Mercado Pago |
 | `src/components/checkout/confirmacion.tsx` | Pantalla de confirmación post-pago |
+| `src/components/admin/order_drawer.tsx` | **se extiende**: mostrar el estado del pago junto al del envío |
 
 ---
 
@@ -56,52 +113,71 @@ El webhook recibe `payment.approved`, el backend marca el pedido como `pagado`, 
 ### 1. Crear pedido
 
 ```ts
-// POST /api/pedidos
+// POST /api/orders            (público: sin requireRole)
 // Body: { nombre, apellido, telefono, email?, direccion, items: [{ vinoId, cantidad }] }
-// Res: { preferenceId, pedidoId }
+// Res: { preferenceId, orderId }
 ```
 
-1. Validar body con Zod.
-2. Calcular total: `sum(items.map(i => i.precioUnitario * i.cantidad))`.
-3. Crear Preference en Mercado Pago:
-   - `items`: array con `{ title, quantity, unit_price, currency_id: 'ARS' }`
-   - `payer`: `{ name, surname, email?, phone, address }`
-   - `payment_methods`: `{ excluded_payment_types: [{ id: 'credit_card' }] }`
-   - `back_urls`: `{ success, failure, pending }` → redirigen al frontend con query param
-4. Guardar pedido en DB con estado `pendiente`.
-5. Devolver `{ preferenceId, pedidoId }`.
+> Del body **no** llega ningún precio. Solo qué vinos y cuántos (D-E).
+
+1. Validar el body con Zod.
+2. Resolver o crear el `Customer` (ver D-G de `spec.md`).
+3. **Leer `Wine.price` de la base** y calcular el total. El precio del cliente no
+   se mira: es un número que el usuario editó.
+4. Crear la Preference en Mercado Pago:
+   - `items`: `{ title, quantity, unit_price: <el precio de la base>, currency_id: 'ARS' }`
+   - `payer`: `{ name, surname, email?, phone }` — **`address` va aparte y con el
+     formato de Mercado Pago** (`street_name`, `street_number`, `city_name`,
+     `zip_code`). Mandar la dirección como un string suelto la hace fallar.
+   - `payment_methods.excluded_payment_types`: **`credit_card` y `debit_card`**.
+     Si solo se excluye la primera, la segunda sigue apareciendo, y el usuario
+     pidió que no haya tarjetas (RF-04).
+   - `back_urls`: `{ success, failure, pending }` → al frontend con query param
+5. Guardar el `Order` con `status: 'pendiente'` (envío) y
+   `pagoEstado: 'no_iniciado'` (pago), y `total` con el número del paso 3.
+6. Devolver `{ preferenceId, orderId }`.
 
 ### 2. Webhook de Mercado Pago
 
 ```ts
-// POST /api/webhooks/mercadopago
-// Body: { action, data: { id } }
+// POST /api/orders/webhook      (público, pero se valida la firma)
 ```
 
-1. Validar firma del webhook (header `x-signature`).
-2. Si `action` es `payment.created` o `payment.updated`:
-   - Consultar el pago en Mercado Pago con `GET /v1/payments/:id`.
-   - Si `status` es `approved` → marcar pedido como `pagado`.
-   - Si `status` es `rejected` → marcar pedido como `rechazado`.
+1. Validar la firma del header `x-signature` con el **secreto de la webhook**. Si
+   no se valida, cualquiera que conozca la URL cambia el estado de cualquier
+   pedido: hay que comparar contra el manifest y recién después mirar el body.
+2. Consultar el pago con `GET /v1/payments/:id`. **El `status` del cuerpo de la
+   webhook no se confía**: la webhook solo dice *qué* cambió.
+3. Según ese `status`, poner `pagoEstado` en `aprobado` o `rechazado`.
+4. **Idempotente:** si el pedido ya tiene ese `pagoEstado`, no se toca. Una
+   webhook repetida no puede, por ejemplo, sumar dos veces el total al `Customer`.
+5. Al aprobar, actualizar `Customer.totalOrders`, `.totalSpent` y `.lastOrderAt`.
 
-### 3. Expirar pedidos
+### 3. Expirar pedidos sin pagar
 
 ```ts
 // Cada minuto
-const vencidos = await prisma.pedido.findMany({
-  where: { estado: 'pendiente', creadoEn: { lt: new Date(Date.now() - 10 * 60 * 1000) } }
+const vencidos = await prisma.order.findMany({
+  where: {
+    pagoEstado: { in: ['no_iniciado', 'pendiente'] },
+    createdAt: { lt: new Date(Date.now() - 10 * 60 * 1000) }
+  }
 })
-await prisma.pedido.updateMany({
-  where: { id: { in: vencidos.map(p => p.id) } },
-  data: { estado: 'expirado' }
+await prisma.order.updateMany({
+  where: { id: { in: vencidos.map((o) => o.id) } },
+  data: { pagoEstado: 'expirado' }
 })
 ```
+
+> Se toca `pagoEstado`, **no** `status`. `Order.status` sigue siendo el del envío
+> (D-7): un pedido que nadie pagó no tiene un envío vencido, tiene un envío que
+> nunca se mandaron.
 
 ---
 
 ## Interfaz
 
-### POST /api/pedidos
+### POST /api/orders  (público)
 
 **Request:**
 ```json
@@ -121,23 +197,23 @@ await prisma.pedido.updateMany({
 ```json
 {
   "preferenceId": "123456789-abcdef",
-  "pedidoId": "pedido-uuid"
+  "orderId": "clx1234abcd",
+  "total": 15000
 }
 ```
 
-### GET /api/pedidos/:id
+> Sin `precioUnitario` en el `items`, sin `nombre` y sin `apellido`: es lo que
+> ya no viaja. El backend los lee de la base y el `total` es su número.
 
-**Response 200:**
-```json
-{
-  "id": "pedido-uuid",
-  "estado": "pagado",
-  "total": 15000,
-  "items": [{ "nombre": "Malbec 2019", "cantidad": 2, "precioUnitario": 7500 }],
-  "comprador": { "nombre": "María", "apellido": "González", "telefono": "...", "email": "...", "direccion": "..." },
-  "creadoEn": "2026-10-15T12:00:00Z"
-}
-```
+### GET /api/orders/:id (el del panel, **con `requireRole`**)
+
+Sin cambios: sigue exigiendo `admin`, `gestor` o `vendedor`, y sigue devolviendo
+los datos del comprador. **Un `vendedor` sí puede verlos** — es su trabajo —, y es
+el único dato del comprador que existe en el sistema.
+
+**No hay un endpoint público que devuelva los datos del comprador** (D-F). La
+confirmación post-pago se arma en el frontend con el `orderId` que dejó el
+`POST`, guardado en `sessionStorage`.
 
 ---
 

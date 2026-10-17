@@ -47,6 +47,31 @@ enum OrderStatus {
   devuelto
 }
 
+/// Estado **del pago**, separado de `OrderStatus` (D-7 de la spec 009).
+///
+/// `OrderStatus` dice en que anda el paquete, y lo cambia **a mano** un
+/// vendedor. El pago es otro hecho: no lo cambia nadie, lo cambia la webhook de
+/// Mercado Pago. Con un solo campo, un pedido en `cancelado` no diria si la
+/// plata entro, y el selector del panel mezclaria dos preguntas distintas.
+///
+/// Los dos enums comparten el valor `pendiente` y significan cosas distintas:
+/// `status = pendiente` es "lo estamos armando" y `pagoEstado = pendiente` es
+/// "abrio Mercado Pago y no termino". Prisma los tipa como enums separados, asi
+/// que TypeScript rechaza cruzarlos; lo que **no** distingue es leerlos en una
+/// vista. Por eso los comentarios de cada campo repiten a que se refieren.
+enum EstadoPago {
+  /// El comprador lleno el formulario. Todavía no abrió Mercado Pago.
+  no_iniciado
+  /// Abrió Mercado Pago y no terminó.
+  pendiente
+  /// Mercado Pago confirmó el pago.
+  aprobado
+  /// Mercado Pago rechazó el pago.
+  rechazado
+  /// No se completó en 10 minutos.
+  expirado
+}
+
 enum UserRole {
   admin
   gestor
@@ -137,13 +162,28 @@ model Order {
   customer        Customer        @relation(fields: [customerId], references: [id])
   items           OrderItem[]
   total           Int
+  /// Estado **del envío**: `pendiente`, `preparando`, `enviado`, `entregado`…
+  /// Lo cambia una persona desde el panel. No tiene nada que ver con el pago.
   status          OrderStatus     @default(pendiente)
+  /// Estado **del pago** (spec 009, D-7). Lo cambia la webhook, nunca una
+  /// persona. Arranca en `no_iniciado` porque el pedido se crea antes de que
+  /// el comprador abra Mercado Pago.
+  pagoEstado      EstadoPago      @default(no_iniciado)
+  /// Id del pago en Mercado Pago. Nulo hasta que hay Preference.
+  ///
+  /// Es la llave con la que la webhook encuentra el pedido: **no** se busca por
+  /// email ni por nombre, porque dos compradores pueden comprar el mismo día y
+  /// el mismo vino.
+  pagoId          String?         @unique
   shippingAddress Json
   timeline        OrderTimeline[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
   @@index([status])
+  /// El cron de expiracion (T5) consulta por `pagoEstado` + `createdAt` juntos,
+  /// asi que el indice va en los dos y no en uno solo.
+  @@index([pagoEstado, createdAt])
   @@index([createdAt])
   @@index([customerId])
 }
@@ -162,14 +202,37 @@ model OrderItem {
   @@index([wineId])
 }
 
+/// Un evento del pedido: **del envio o del pago**, no de los dos.
+///
+/// La entrada tiene `status` o tiene `pagoEstado`, nunca las dos. Una entrada de
+/// envio dice "el vendedor entrego esto"; una de pago dice "Mercado Pago
+/// aprobo esto". Mezclarlas en un campo de texto seria volver a la columna que
+/// significa dos cosas, que es justo lo que la spec 009 vino a separar.
+///
+/// `status` paso a **opcional** por esto. Antes era obligatorio y la unica forma
+/// de registrar un evento de pago era meter un estado de envio falso, que
+/// mentia dos veces: en el historial y en el `Order.status`.
+///
+/// Volverlo opcional obligo a cambiar, **en el mismo commit**: el schema JSON de
+/// la respuesta de `GET /api/orders/:id` —que declara `status: { type: 'string' }`
+/// y **cortaria** un `null` (gotcha 11 de `AGENTS.md`)— y el componente
+/// `order_timeline.tsx` del panel, que pasa `entrada.status` a `StatusBadge`.
 model OrderTimeline {
-  id        String      @id @default(cuid())
-  orderId   String
-  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  status    OrderStatus
-  note      String?
-  author    String      @default("Admin")
-  createdAt DateTime    @default(now())
+  id          String       @id @default(cuid())
+  orderId     String
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Estado **del envio**. Nulo en las entradas de pago.
+  status      OrderStatus?
+  /// Estado **del pago**. Nulo en las entradas de envio.
+  pagoEstado  EstadoPago?
+  /// "Mercado Pago" en las de pago, "Admin" en las de envio. Se deja explicito
+  /// porque una entrada sin autor parece escrita a mano cuando la escribio una
+  /// webhook.
+  origen      String       @default("Admin")
+  note        String?
+  author      String       @default("Admin")
+  createdAt   DateTime     @default(now())
 
   @@index([orderId])
+  @@index([pagoEstado])
 }

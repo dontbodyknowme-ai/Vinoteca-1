@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import { TIENDA } from '../utils/tienda'
 import type { Wine } from '../types/vino'
 
 /**
@@ -44,7 +45,7 @@ export const Hero = ({ wines, onSelectWine }: HeroProps) => {
           <h1 className='mb-8'>
             <img
               src='/logo-2920.svg'
-              alt='2920'
+              alt={TIENDA.nombre}
               className='mx-auto h-48 w-auto md:h-64'
             />
           </h1>

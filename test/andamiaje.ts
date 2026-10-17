@@ -18,7 +18,9 @@
 
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router-dom'
 import App from '../src/App'
+import { AuthProvider } from '../src/hooks/useAuth'
 import type { CartItem } from '../src/types/vino'
 
 /**
@@ -153,6 +155,76 @@ Object.defineProperty(window, 'matchMedia', {
   writable: true
 })
 
+/**
+ * `localStorage` **no existe** en los tests, y no es culpa de jsdom.
+ *
+ * Node 24+ trae su propio `localStorage` experimental y lo cuelga en
+ * `globalThis` **antes** de que jsdom arme su entorno, asi que el de jsdom
+ * queda tapado. El propio Node avisa:
+ *
+ *   ExperimentalWarning: localStorage is not available because
+ *   --localstorage-file was not provided.
+ *
+ * O sea que `localStorage.getItem(...)` es un `TypeError` —leer `undefined`— y no
+ * un `null` como en un navegador. Cualquier test que toque el almacenamiento de
+ * la app revienta con un error que no habla de almacenamiento.
+ *
+ * Y la app **si** lo usa: el catalogo y el carrito viven en `localStorage` (la
+ * 004-b movio la sesion del panel a un token en memoria, pero el carrito de la
+ * tienda se quedo). O sea que esto no es un detalle del entorno: es una cosa que
+ * los tests de la tienda necesitan y no podian tocar.
+ *
+ * El stub es un `Storage` en memoria: guarda, devuelve y se limpia entre tests
+ * como haria un navegador recien abierto.
+ *
+ * Un cierre y no una clase con campos `#`: el `tsconfig` tiene `target: ES2020`
+ * y los campos privados son ES2022. Con `private` de TypeScript tampoco —esa
+ * palabra solo promete algo que el compilador no para nada— asi que el mapa
+ * vive en la funcion y se accede por la interfaz `Storage`.
+ */
+if (!(globalThis.localStorage as Storage | undefined)) {
+  const crearAlmacenamiento = (): Storage => {
+    const datos = new Map<string, string>()
+
+    return {
+      get length(): number {
+        return datos.size
+      },
+      clear: () => datos.clear(),
+      getItem: (clave) => datos.get(clave) ?? null,
+      key: (indice) => [...datos.keys()][indice] ?? null,
+      removeItem: (clave) => {
+        datos.delete(clave)
+      },
+      setItem: (clave, valor) => {
+        datos.set(clave, String(valor))
+      }
+    }
+  }
+
+  const instancia = crearAlmacenamiento()
+
+  // En **los dos**: `globalThis` y `window`. Un componente puede tocar cualquiera
+  // de los dos y si son objetos distintos la mitad de los tests pasa y la otra
+  // mitad ve el `undefined` de Node.
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: instancia,
+    configurable: true,
+    writable: true
+  })
+
+  Object.defineProperty(window, 'localStorage', {
+    value: instancia,
+    configurable: true,
+    writable: true
+  })
+}
+
+/**
+ * `sessionStorage` **si** existe en este entorno, a diferencia del anterior. No
+ * se toca: si alguna vez Node lo tapa tambien, el chequeo es el mismo.
+ */
+
 export const CLAVE_VINOS = 'vinoteca_wines'
 export const CLAVE_CARRITO = 'vinoteca_cart'
 
@@ -177,14 +249,42 @@ export interface Montaje {
  * Sin `StrictMode` a proposito (D-P, R14): el doble montaje de efectos es
  * comportamiento de desarrollo, y con el montaria dos veces cada sincronizacion a
  * `localStorage`.
+ *
+ * ## Los dos providers, no solo el Router (spec 009, T6)
+ *
+ * `App` llama `useLocation()` para decidir si esta en la tienda o en el
+ * checkout. Sin un Router arriba, eso **tira**: "useLocation() may be used only
+ * in the context of a `<Router>`". O sea que el router es lo que hace que
+ * `montarApp()` siga sirviendo para los tests de la tienda, y `rutaInicial` es lo
+ * que deja probar el checkout sin abrir un navegador.
+ *
+ * Y el `AuthProvider` esta por el mismo motivo, con una diferencia: la barra de
+ * navegacion y el catalogo llaman `useAuth()`, asi que **cualquier** test que
+ * termine en la tienda —por ejemplo el de "Volver a la tienda" del checkout—
+ * reventaba con "useAuth debe usarse dentro de AuthProvider".
+ *
+ * Montar lo mismo que `main.tsx` es lo correcto: un test que monta la app
+ * recortando providers mide un arbol que en produccion no existe. El
+ * `AuthProvider` pide `/api/auth/me` al montar y, con el `fetch` interceptado,
+ * cae en el `catch` de `me()` y queda deslogueado —que es exactamente lo que
+ * esta una persona sin sesion.
+ *
+ * `MemoryRouter` y no `BrowserRouter`: no toca `window.history`, asi que un test
+ * no deja la URL cambiada para el siguiente.
  */
-export const montarApp = (): Montaje => {
+export const montarApp = (rutaInicial = '/'): Montaje => {
   const contenedor = document.createElement('div')
   document.body.appendChild(contenedor)
   const root = createRoot(contenedor)
 
   act(() => {
-    root.render(createElement(App))
+    root.render(
+      createElement(
+        AuthProvider,
+        null,
+        createElement(MemoryRouter, { initialEntries: [rutaInicial] }, createElement(App))
+      )
+    )
   })
 
   return { contenedor, root }
